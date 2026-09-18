@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gori Ribbon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Cormorant+Garamond:wght@300;500&family=Gowun+Batang&family=IBM+Plex+Mono:wght@400;600&family=Instrument+Serif:ital@0;1&family=Nanum+Myeongjo:wght@400;700;800&family=Noto+Sans+KR:wght@300;500;900&family=Noto+Serif+KR:wght@300;600&family=Playfair+Display:wght@400;700&family=Space+Grotesk:wght@400;700&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <aside id="panel">
+    <header>
+      <h1>Gori Ribbon</h1>
+      <p>고리 스플라인을 따라 글자 띠가 이어집니다.</p>
+    </header>
+    <div class="actions">
+      <button id="copy" class="primary">설정 복사</button>
+      <button id="play">일시정지</button>
+    </div>
+    <div id="controls"></div>
+    <div class="actions export">
+      <button id="png">PNG 저장</button>
+      <button id="rec">녹화 시작</button>
+    </div>
+    <footer>작품을 클릭하면 바로 타이핑할 수 있어요<br>Space 글자 흐름 재생/정지 (입력칸 밖에서)</footer>
+  </aside>
+  <main id="stage">
+    <button id="toggle-panel" title="패널 접기/펴기">☰</button>
+  </main>
+
+  <script src="js/ribbon.js"></script>
+  <script type="module" src="js/app3d.js"></script>
+</body>
+</html>

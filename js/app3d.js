@@ -36,13 +36,14 @@ const fontKey = f => `${f[0]}|${f[1]}`;
 const isVarFont = () => S.font.endsWith('|var');
 
 const S = {
-  text: 'THE LOOP OF GORI ',
-  font: 'SUIT Variable|var', weight: 500, sep: '  ✳  ', textScale: 0.8, tracking: 0,
-  roundness: 1, width: 40, angle: 55, flip: false,
-  loopSize: 180, rowGap: 1.06, stagger: 0.48, rowDepth: 0,
-  bg: '#000000', strip: '#000000', ink: '#00ffaa', hl: '#e8452c', back: '#000000', shade: 0.22,
+  text: 'BEOPORT  BY  KWANGHO LEE',
+  font: 'SUIT Variable|var', weight: 600, sep: '     ', textScale: 0.72, tracking: 0,
+  roundness: 1.24, width: 40, angle: 53, flip: false,
+  loopSize: 200, rowGap: 0.76, stagger: 0.5, rowDepth: 0, weave: 1,
+  bg: '#000000', strip: '#000000', ink: '#00ffaa', hl: '#e8452c', back: '#40e772', shade: 0.22,
   yaw: 45, pitch: 0, // 고정 카메라 각도(도)
-  flowSpeed: 0.08, feed: 1, flash: 0.9,
+  flowSpeed: 0.1, rowSlide: 0, feed: 1, flash: 0.9,
+  recSec: 8, // 녹화(mp4) 루프 길이(초)
   wobble: 0.2, wobbleRadius: 38, bounce: 0.45, snap: 30, tension: 4, stiff: 2.4,
   // 가변 굵기 (SUIT Variable)
   varMin: 100, varMax: 900,
@@ -71,6 +72,7 @@ const GROUPS = [
     { k: 'rowGap', t: 'range', label: '줄 간격', min: 0.7, max: 2, step: 0.01 },
     { k: 'stagger', t: 'range', label: '줄 어긋남', min: 0, max: 1, step: 0.01 },
     { k: 'rowDepth', t: 'range', label: '줄 깊이 이동', min: -1, max: 1, step: 0.01 },
+    { k: 'weave', t: 'range', label: '줄 엮기 (0 끔 · ± 방향)', min: -1, max: 1, step: 0.01 },
   ]],
   ['색', [
     { k: 'strip', t: 'color', label: '글자 면 (띠 앞면)' },
@@ -82,8 +84,10 @@ const GROUPS = [
   ]],
   ['움직임 · 타이핑 반응', [
     { k: 'flowSpeed', t: 'range', label: '글자 흐름', min: -1, max: 1, step: 0.01 },
+    { k: 'rowSlide', t: 'range', label: '줄 흐름 (홀짝 반대 방향)', min: -0.5, max: 0.5, step: 0.005 },
     { k: 'feed', t: 'range', label: '타이핑 밀림', min: 0, max: 4, step: 0.05 },
     { k: 'flash', t: 'range', label: '새 글자 강조 시간 (초)', min: 0, max: 3, step: 0.05 },
+    { k: 'recSec', t: 'range', label: '녹화 길이 (초, 루프)', min: 2, max: 20, step: 1 },
   ]],
   ['가변 굵기 (Variable)', [
     { k: 'varMin', t: 'range', label: '가장 얇게', min: 100, max: 900, step: 1, rebuild: 'atlas', varOnly: true },
@@ -125,13 +129,21 @@ const U = {
   levels: { value: 1 }, chunks: { value: 1 }, tBase: { value: 0 },
   flashBold: { value: 0 },
   disp: { value: null }, cordTex: { value: new THREE.Vector2(1, 1) }, npu: { value: 1 }, worldPerPx: { value: 1 },
+  weave: { value: 0 },
 };
 
 const vert = /* glsl */`
   uniform sampler2D disp;      // 끈 변위 (화면 px, RG) — 텍스처 행 = 고리 줄, 열 = 줄을 따라간 노드
   uniform vec2 cordTex;
-  uniform float npu, rowIdx, unitIdx, worldPerPx;
+  uniform float npu, rowIdx, unitIdx, worldPerPx, weave;
   varying vec2 vUv; varying vec3 vView;
+  // 줄 엮기: 고리 머리(띠 가운데 s≈0) 왼쪽 절반은 뒤로, 오른쪽 절반은 앞으로 깊이만 민다.
+  // 윗줄 꼬리와 두 번 겹치는 곳에서 한 번은 아래, 한 번은 위로 지나가서 윗줄 고리에 꿰인 것처럼 보임.
+  // 화면 위치·음영은 그대로 두고 깊이 버퍼 값만 바꾼다 (고리 옆면 |s|>0.4 부터는 원래 깊이)
+  float weaveBias(float u) {
+    float s = u * 2.0 - 1.0;
+    return -weave * 160.0 * clamp(s / 0.08, -1.0, 1.0) * (1.0 - smoothstep(0.25, 0.4, abs(s)));
+  }
   void main() {
     vUv = uv;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -139,7 +151,7 @@ const vert = /* glsl */`
     vec2 tuv = vec2((xi + 0.5) / cordTex.x, (rowIdx + 0.5) / cordTex.y);
     mv.xy += texture2D(disp, tuv).rg * worldPerPx;                // 화면 평면에서 밀기
     vView = mv.xyz;
-    gl_Position = projectionMatrix * mv;
+    gl_Position = projectionMatrix * vec4(mv.xy, mv.z + weaveBias(uv.x), 1.0);
   }`;
 
 const frag = /* glsl */`
@@ -355,7 +367,10 @@ function layout() {
   const drift = Math.abs(S.rowDepth * UW * Math.sin(yaw)) * nR;   // 줄 깊이 이동이 화면상 가로로 밀리는 양
   const nK = Math.ceil((view.halfW + drift) / colStep) + 2;
   let g = 0;
+  ROWS.length = 0;
   for (let r = -nR; r <= nR; r++) {
+    const row = { dir: ((r % 2) + 2) % 2 ? -1 : 1, n: null, r, list: [] };
+    ROWS.push(row);
     for (let k = -nK; k <= nK; k++, g++) {
       if (!meshes[g]) {
         const mat = new THREE.ShaderMaterial({
@@ -369,14 +384,34 @@ function layout() {
       const m = meshes[g];
       m.visible = true;
       m.position.set(k * UW + (((r % 2) + 2) % 2) * S.stagger * UW, -r * rowStep, r * S.rowDepth * UW);
-      m.material.uniforms.s0.value = (k + r * 0.5) * UNIT.arc;   // 줄마다 글자 위치를 조금씩 다르게
       m.material.uniforms.rowIdx.value = r + nR; m.material.uniforms.unitIdx.value = k + nK;
+      row.list.push({ m, k, x: m.position.x });
     }
   }
   cordAlloc(nR * 2 + 1, nK * 2 + 1);
+  applySlide(false);
   for (; g < meshes.length; g++) meshes[g].visible = false;
   // 고리 하나의 가운데(가로: 어긋남 절반, 세로: 끝점~꼭대기 가운데)가 화면 중심
   content.position.set(-S.stagger * UW / 2, -(220 - 71) / 2, 0);
+}
+
+// ───────────────────────── 줄 흐름 ─────────────────────────
+// 짝수 줄은 +x, 홀수 줄은 −x 로 일정 속도 이동. 한 유닛(UW)만큼 가면 메쉬를 제자리로 되돌리고
+// 논리 유닛 번호(n)를 하나 옮겨서 끊김 없이 무한히 흐름 (글자는 띠에 붙은 채로 같이 이동)
+const ROWS = [];
+let slide = 0;
+function applySlide(shiftCord = true) {
+  if (!UNIT) return;
+  ROWS.forEach((row, ri) => {
+    const off = row.dir * slide, n = Math.floor(off / UW), frac = off - n * UW;
+    if (shiftCord && row.n !== null && n !== row.n) cordShiftRow(ri, n - row.n);
+    row.n = n;
+    if (CORD.rowFrac) CORD.rowFrac[ri] = frac;
+    for (const { m, k, x } of row.list) {
+      m.position.x = x + frac;
+      m.material.uniforms.s0.value = (k - n + row.r * 0.5) * UNIT.arc;   // 줄마다 글자 위치를 조금씩 다르게
+    }
+  });
 }
 
 // ───────────────────────── 타이핑 반응 ─────────────────────────
@@ -408,7 +443,28 @@ renderer.domElement.addEventListener('pointermove', e => {
 renderer.domElement.addEventListener('pointerleave', () => { W.inside = false; W.mdx = W.mdy = 0; });
 
 const CORD = { rows: 0, units: 0, npu: 0, len: 0, n: 0, restX: null, restY: null, d: null, v: null, rel: null,
-               data: null, tex: null, restDirty: true, asleep: true };
+               data: null, tex: null, restDirty: true, asleep: true,
+               rowFrac: null, restFrac: null, axX: 0, axY: 0 };   // 줄 흐름: 현재/rest 계산 시점 이동량, 로컬 x 1당 화면 px
+
+// 줄이 한 유닛 넘어가 메쉬가 되돌아갈 때, 끈 변위도 유닛 단위로 같이 옮겨 튕김이 제자리에 남게 함
+function cordShiftRow(ri, s) {
+  const C = CORD; if (!C.d || ri >= C.rows) return;
+  const b = ri * C.len, sh = s * C.npu, len = C.len;
+  for (const [arr, w] of [[C.d, 2], [C.v, 2], [C.rel, 1]]) {
+    const seg = arr.slice(b * w, (b + len) * w);
+    for (let i = 0; i < len; i++) {
+      const src = i - sh;
+      for (let a = 0; a < w; a++) arr[(b + i) * w + a] = src >= 0 && src < len ? seg[src * w + a] : 0;
+    }
+  }
+}
+
+// 끈 변위를 모두 0으로 (녹화 시작 시 튕김 제거)
+function cordReset() {
+  const C = CORD; if (!C.d) return;
+  C.d.fill(0); C.v.fill(0); C.rel.fill(0); C.data.fill(0);
+  C.tex.needsUpdate = true; C.asleep = true;
+}
 
 function cordAlloc(rows, units) {
   const npu = Math.max(16, Math.min(72, Math.floor(4096 / units)));
@@ -416,7 +472,8 @@ function cordAlloc(rows, units) {
   if (rows === CORD.rows && units === CORD.units && npu === CORD.npu && CORD.d) return;
   const len = units * npu, n = rows * len;
   Object.assign(CORD, { rows, units, npu, len, n, restX: new Float32Array(n), restY: new Float32Array(n),
-    d: new Float32Array(n * 2), v: new Float32Array(n * 2), rel: new Float32Array(n), data: new Uint16Array(n * 2) });
+    d: new Float32Array(n * 2), v: new Float32Array(n * 2), rel: new Float32Array(n), data: new Uint16Array(n * 2),
+    rowFrac: new Float32Array(rows), restFrac: new Float32Array(rows) });
   if (CORD.tex) CORD.tex.dispose();
   CORD.tex = new THREE.DataTexture(CORD.data, len, rows, THREE.RGFormat, THREE.HalfFloatType);
   CORD.tex.minFilter = CORD.tex.magFilter = THREE.LinearFilter;
@@ -435,7 +492,11 @@ function computeRest() {
     while (q < cum.length - 2 && cum[q + 1] < t) q++;
     loc.push(P[q].clone().lerp(P[q + 1], (t - cum[q]) / ((cum[q + 1] - cum[q]) || 1)));
   }
-  const v3 = new THREE.Vector3();
+  const v3 = new THREE.Vector3(), o3 = new THREE.Vector3();
+  o3.set(0, 0, 0).applyMatrix4(content.matrixWorld).project(camera);
+  v3.set(1000, 0, 0).applyMatrix4(content.matrixWorld).project(camera);
+  C.axX = (v3.x - o3.x) * 0.5 * r.width / 1000; C.axY = (v3.y - o3.y) * 0.5 * r.height / 1000;
+  C.restFrac.set(C.rowFrac);
   for (let row = 0; row < C.rows; row++) {
     for (let u = 0; u < C.units; u++) {
       const mesh = meshes[row * C.units + u];
@@ -462,7 +523,8 @@ function stepCord(dt) {
   for (let i = 0; i < n; i++) {
     if (rel[i] > 0) { rel[i] -= dt; continue; }
     if (!moving) continue;
-    const dx = restX[i] + d[2 * i] - W.px, dy = restY[i] + d[2 * i + 1] - W.py, r2 = dx * dx + dy * dy;
+    const row = (i / len) | 0, sf = C.rowFrac[row] - C.restFrac[row];   // rest 이후 줄 흐름으로 움직인 양
+    const dx = restX[i] + sf * C.axX + d[2 * i] - W.px, dy = restY[i] + sf * C.axY + d[2 * i + 1] - W.py, r2 = dx * dx + dy * dy;
     if (r2 < reach2) {
       const w = Math.exp(-r2 * inv2) * grab;
       v[2 * i] += (pvx * S.wobble - v[2 * i]) * w; v[2 * i + 1] += (pvy * S.wobble - v[2 * i + 1]) * w;
@@ -509,17 +571,29 @@ function resize() {
 new ResizeObserver(resize).observe(stage);
 
 // ───────────────────────── 루프 ─────────────────────────
-let flow = 0, t = 0, playing = true, last = performance.now();
+let flow = 0, t = 0, playing = true, exporting = false, last = performance.now();
 
 function tick(now) {
+  requestAnimationFrame(tick);
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (playing) { t += dt; flow += S.flowSpeed * UW * dt; }
+  if (exporting) return;   // mp4 내보내는 중에는 exportMP4 가 직접 프레임을 그림
+  if (playing) { t += dt; flow += S.flowSpeed * UW * dt; slide += S.rowSlide * UW * dt; }
   // 타이핑 밀림은 부드럽게 따라가고, 강조는 서서히 사라짐
   react.feed += (react.feedTarget - react.feed) * (1 - Math.exp(-dt * 7));
   react.hl = S.flash > 0 ? Math.max(0, react.hl - dt / S.flash) : 0;
+  syncFrame();
+  if (CORD.restDirty) computeRest();
+  stepCord(playing ? dt : 0);
+  renderer.render(scene, camera);
+}
+
+// 현재 flow / slide / react 상태를 유니폼·메쉬·카메라에 반영
+function syncFrame() {
+  applySlide();
   U.flow.value = flow + react.feed;
   U.hlAmt.value = react.hl * react.hl * (3 - 2 * react.hl);
   U.shade.value = S.shade;
+  U.weave.value = S.weave;
   syncVarUniforms();
 
   // 카메라 고정: 방위각 yaw, 높이각 pitch
@@ -527,11 +601,6 @@ function tick(now) {
   const p = THREE.MathUtils.degToRad(S.pitch), d = 10000;
   camera.position.set(0, Math.sin(p) * d, Math.cos(p) * d);
   camera.lookAt(0, 0, 0);
-  if (CORD.restDirty) computeRest();
-  stepCord(playing ? dt : 0);
-
-  renderer.render(scene, camera);
-  requestAnimationFrame(tick);
 }
 
 
@@ -552,20 +621,88 @@ function exportPNG() {
   download(renderer.domElement.toDataURL('image/png'), `gori-ribbon_${stamp()}.png`);
   renderer.setPixelRatio(pr); resize();
 }
-let rec = null;
-function toggleRec() {
+// 녹화: 실시간 캡처 대신 프레임을 하나씩 그려 H.264 로 인코딩 → mp4.
+// 길이 recSec 동안 글자가 반복 문구 한 바퀴(정수 배)만큼 정확히 흐르도록 속도를 맞춰서
+// 마지막 프레임 다음이 첫 프레임과 이어지는 루프 영상이 된다. (마우스 튕김·타이핑 강조는 빼고 녹화)
+const REC_FPS = 60;
+let recCancel = false;
+async function exportMP4() {
   const btn = document.getElementById('rec');
-  if (rec) { rec.stop(); return; }
-  const stream = renderer.domElement.captureStream(60);
-  const type = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t));
-  const chunks = [];
-  rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 16e6 });
-  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
-  rec.onstop = () => {
-    download(URL.createObjectURL(new Blob(chunks, { type })), `gori-ribbon_${stamp()}.${type.includes('mp4') ? 'mp4' : 'webm'}`);
-    rec = null; btn.textContent = '녹화 시작'; btn.classList.remove('rec-on');
-  };
-  rec.start(); btn.textContent = '녹화 중지'; btn.classList.add('rec-on');
+  if (exporting) { recCancel = true; return; }
+  if (!('VideoEncoder' in window)) { alert('이 브라우저는 mp4 인코딩(WebCodecs)을 지원하지 않아요. 최신 Chrome / Edge / Safari 에서 열어주세요.'); return; }
+
+  // 출력 크기: 화면 캔버스 그대로, 단 4K 화소 수 이내 · 짝수
+  const src = renderer.domElement;
+  const fit = Math.min(1, Math.sqrt(3840 * 2160 / (src.width * src.height)), 4096 / Math.max(src.width, src.height));
+  let w = Math.floor(src.width * fit / 2) * 2, h = Math.floor(src.height * fit / 2) * 2;
+  let config = null;
+  for (let tries = 0; tries < 6 && !config; tries++) {
+    for (const codec of ['avc1.640034', 'avc1.640033', 'avc1.4d0034', 'avc1.42003e']) {
+      const c = { codec, width: w, height: h, framerate: REC_FPS, bitrate: Math.min(40e6, Math.max(8e6, w * h * REC_FPS * 0.12)) };
+      if ((await VideoEncoder.isConfigSupported(c).catch(() => ({}))).supported) { config = c; break; }
+    }
+    if (!config) { w = Math.floor(w * 0.8 / 2) * 2; h = Math.floor(h * 0.8 / 2) * 2; }
+  }
+  if (!config) { alert('mp4(H.264) 인코더를 설정할 수 없어요.'); return; }
+
+  let Muxer, ArrayBufferTarget;
+  try { ({ Muxer, ArrayBufferTarget } = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs')); }
+  catch (e) { alert('mp4 모듈을 불러오지 못했어요. 인터넷 연결을 확인해주세요.'); return; }
+
+  // 루프 조건: 글자 흐름이 반복 문구 길이(L)의 정수 배만큼 이동
+  const T = S.recSec, N = Math.round(T * REC_FPS);
+  const L = U.totalPx.value / U.ppw.value;
+  let m = Math.round(S.flowSpeed * UW * T / L);
+  if (!m && S.flowSpeed) m = Math.sign(S.flowSpeed);
+  const flowTravel = m * L;
+  // 줄 흐름은 유닛 폭의 정수 배만큼 (켜져 있을 때만)
+  let j = Math.round(S.rowSlide * T);
+  if (!j && S.rowSlide) j = Math.sign(S.rowSlide);
+  const slideTravel = j * UW;
+
+  const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: REC_FPS }, fastStart: 'in-memory' });
+  let encErr = null;
+  const encoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: e => { encErr = e; } });
+  encoder.configure(config);
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+
+  exporting = true; recCancel = false;
+  btn.classList.add('rec-on');
+  const f0 = flow, s0 = slide, hl0 = react.hl;
+  react.hl = 0; react.feed = react.feedTarget;
+  cordReset();
+  try {
+    for (let i = 0; i < N && !recCancel && !encErr; i++) {
+      flow = f0 + flowTravel * i / N;
+      slide = s0 + slideTravel * i / N;
+      syncFrame();
+      if (CORD.restDirty) computeRest();
+      renderer.render(scene, camera);
+      octx.drawImage(src, 0, 0, w, h);
+      const frame = new VideoFrame(out, { timestamp: Math.round(i * 1e6 / REC_FPS), duration: Math.round(1e6 / REC_FPS) });
+      encoder.encode(frame, { keyFrame: i % REC_FPS === 0 });
+      frame.close();
+      if (i % 4 === 0) {
+        btn.textContent = `녹화 중 ${Math.round(i / N * 100)}% (취소)`;
+        while (encoder.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 1));
+        await new Promise(r => setTimeout(r, 0));   // 화면 갱신
+      }
+    }
+    if (encErr) throw encErr;
+    if (!recCancel) {
+      await encoder.flush();
+      muxer.finalize();
+      download(URL.createObjectURL(new Blob([muxer.target.buffer], { type: 'video/mp4' })), `gori-ribbon_${stamp()}.mp4`);
+    }
+  } catch (e) {
+    console.error(e); alert('녹화 중 오류가 났어요: ' + (e.message || e));
+  } finally {
+    if (encoder.state !== 'closed') encoder.close();
+    flow = f0; slide = s0; react.hl = hl0;
+    exporting = false; last = performance.now();
+    btn.textContent = '녹화 시작'; btn.classList.remove('rec-on');
+  }
 }
 
 // ───────────────────────── UI ─────────────────────────
@@ -637,7 +774,7 @@ const playBtn = document.getElementById('play');
 function syncPlay() { playBtn.textContent = playing ? '일시정지' : '재생'; }
 playBtn.addEventListener('click', () => { playing = !playing; syncPlay(); });
 document.getElementById('png').addEventListener('click', exportPNG);
-document.getElementById('rec').addEventListener('click', toggleRec);
+document.getElementById('rec').addEventListener('click', exportMP4);
 
 // 설정 복사: 현재 값 전체를 태그가 붙은 JSON으로 클립보드에 → Claude에게 붙여넣으면 기본값으로 반영
 async function copySettings() {

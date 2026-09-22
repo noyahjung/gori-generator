@@ -19,7 +19,9 @@ THREE.ColorManagement.enabled = false; // 평면 그래픽: 입력 색 그대로
 
 // ───────────────────────── 설정 ─────────────────────────
 const FONTS = [
-  ['SUIT Variable', 'var', 'SUIT Variable'],   // 로컬 가변 폰트 (wght 100–900)
+  ['SUIT Variable', 'var', 'SUIT Variable', [100, 900]],   // 로컬 가변 폰트 (wght 100–900)
+  ['Google Sans Flex', 'var', 'SUIT Variable', [1, 1000]],  // Google Fonts 가변 (wght 1–1000)
+  ['Schibsted Grotesk', 'var', 'SUIT Variable', [400, 900]], // Google Fonts 가변 (wght 400–900)
   ['Instrument Serif', 400, 'Nanum Myeongjo'],
   ['Cormorant Garamond', 300, 'Nanum Myeongjo'],
   ['Playfair Display', 400, 'Noto Serif KR'],
@@ -37,15 +39,17 @@ const isVarFont = () => S.font.endsWith('|var');
 
 const S = {
   text: 'BEOPORT  BY  KWANGHO LEE',
-  font: 'SUIT Variable|var', weight: 600, sep: '     ', textScale: 0.72, tracking: 0,
+  font: 'Schibsted Grotesk|var', weight: 686, sep: '     ', textScale: 0.7, tracking: -0.04,
+  grain: 0.65, grainSize: 0.045, // 글자 외곽 그레인 (핸드드로잉 느낌)
   roundness: 1.24, width: 40, angle: 53, flip: false,
+  loopVar: 0.15, roundVar: 0.19, seed: 7, // 고리마다 크기·둥글기 랜덤
   loopSize: 200, rowGap: 0.76, stagger: 0.5, rowDepth: 0, weave: 1,
   bg: '#000000', strip: '#000000', ink: '#00ffaa', hl: '#e8452c', back: '#40e772', shade: 0.22,
   yaw: 45, pitch: 0, // 고정 카메라 각도(도)
   flowSpeed: 0.1, rowSlide: 0, feed: 1, flash: 0.9,
   recSec: 8, // 녹화(mp4) 루프 길이(초)
   wobble: 0.2, wobbleRadius: 38, bounce: 0.45, snap: 30, tension: 4, stiff: 2.4,
-  // 가변 굵기 (SUIT Variable)
+  // 가변 굵기 (가변 폰트)
   varMin: 100, varMax: 900,
   varFlash: 0.6,
 };
@@ -58,9 +62,14 @@ const GROUPS = [
     { k: 'sep', t: 'select', label: '반복 사이 구분', options: [['   ·   ', '·'], ['     ', '공백'], ['  —  ', '—'], ['  /  ', '/'], ['  ✳  ', '✳'], [' ', '붙여서']], rebuild: 'atlas' },
     { k: 'textScale', t: 'range', label: '글자 크기 (띠 대비)', min: 0.3, max: 1.1, step: 0.01, rebuild: 'atlas' },
     { k: 'tracking', t: 'range', label: '자간', min: -0.05, max: 0.5, step: 0.01, rebuild: 'atlas' },
+    { k: 'grain', t: 'range', label: '외곽 거칠기 (그레인)', min: 0, max: 1, step: 0.01 },
+    { k: 'grainSize', t: 'range', label: '그레인 크기', min: 0.01, max: 0.1, step: 0.005 },
   ]],
   ['고리', [
     { k: 'roundness', t: 'range', label: '고리 둥글기 (기울기 보정)', min: 0, max: 1.5, step: 0.01, rebuild: 'geo' },
+    { k: 'loopVar', t: 'range', label: '고리 크기 랜덤', min: 0, max: 0.4, step: 0.01, rebuild: 'geo' },
+    { k: 'roundVar', t: 'range', label: '고리 둥글기 랜덤', min: 0, max: 0.4, step: 0.01, rebuild: 'geo' },
+    { k: 'seed', t: 'range', label: '랜덤 시드', min: 1, max: 100, step: 1, rebuild: 'geo' },
   ]],
   ['띠', [
     { k: 'width', t: 'range', label: '띠 폭', min: 16, max: 90, step: 1, rebuild: 'geo' },
@@ -129,7 +138,7 @@ const U = {
   levels: { value: 1 }, chunks: { value: 1 }, tBase: { value: 0 },
   flashBold: { value: 0 },
   disp: { value: null }, cordTex: { value: new THREE.Vector2(1, 1) }, npu: { value: 1 }, worldPerPx: { value: 1 },
-  weave: { value: 0 },
+  weave: { value: 0 }, grain: { value: 0 }, grainSize: { value: 0.03 },
 };
 
 const vert = /* glsl */`
@@ -158,9 +167,14 @@ const frag = /* glsl */`
   uniform sampler2D atlas;
   uniform float s0, segLen, flow, ppw, totalPx, chunkW, rowH, pad, texH, atlasW, atlasH, shade;
   uniform float hlA, hlB, hlAmt;
-  uniform float levels, chunks, tBase, flashBold;
+  uniform float levels, chunks, tBase, flashBold, grain, grainSize;
   uniform vec3 stripColor, inkColor, hlColor, backColor;
   varying vec2 vUv; varying vec3 vView;
+  float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+  }
   void main() {
     float s = s0 + vUv.x * segLen - flow;      // 띠 위 호길이 (− 흐름)
     vec3 n = normalize(cross(dFdx(vView), dFdy(vView)));
@@ -172,17 +186,29 @@ const frag = /* glsl */`
       float pw = mod(px, totalPx);
       float c = floor(pw / chunkW);
       float ly = (1.0 - vUv.y) * texH;
+      // 그레인: 글자 좌표(텍스트 줄 위 px)에 붙은 노이즈 → 글자와 같이 흐르고 반복 문구 주기와 맞아 루프 유지
+      float cell = max(grainSize * texH, 0.5);
+      vec2 gp = vec2(pw, ly) / cell;
+      vec2 wob = grain * (vec2(vnoise(gp * 0.5 + 3.1), vnoise(gp * 0.5 + 7.7)) - 0.5) * cell * 0.8;   // 윤곽 흔들림
+      float pwW = pw + wob.x, lyW = clamp(ly + wob.y, 0.5 - pad, texH + pad - 0.5);
       float inHl = step(hlA, pw) * step(pw, hlB);
       // 가변 굵기: 0(가장 얇게)~1(가장 굵게). 기본 굵기 + 방금 친 글자
       float t = tBase + flashBold * hlAmt * inHl;
       float lv = clamp(t, 0.0, 1.0) * (levels - 1.0);
       float l0 = floor(lv), l1 = min(l0 + 1.0, levels - 1.0), fw = lv - l0;
-      float ux = (pw - c * chunkW) / atlasW;
-      vec2 uv0 = vec2(ux, 1.0 - ((l0 * chunks + c) * rowH + pad + ly) / atlasH);
-      vec2 uv1 = vec2(ux, 1.0 - ((l1 * chunks + c) * rowH + pad + ly) / atlasH);
+      float ux = (pwW - c * chunkW) / atlasW;
+      vec2 uv0 = vec2(ux, 1.0 - ((l0 * chunks + c) * rowH + pad + lyW) / atlasH);
+      vec2 uv1 = vec2(ux, 1.0 - ((l1 * chunks + c) * rowH + pad + lyW) / atlasH);
       vec2 uvc = vec2(px / atlasW, 1.0 - (pad + ly) / atlasH);   // 연속 좌표 → 밉맵 경계 아티팩트 방지
       vec2 gx = dFdx(uvc), gy = dFdy(uvc);
-      float a = mix(textureGrad(atlas, uv0, gx, gy).a, textureGrad(atlas, uv1, gx, gy).a, fw);
+      // 그레인이 있으면 외곽을 조금 흐리게 샘플한 뒤 노이즈 문턱값으로 다시 깎아서 거친 가장자리를 만든다
+      vec2 bx = gx + vec2(grain * cell / atlasW, 0.0), by = gy + vec2(0.0, grain * cell / atlasH);
+      float a = mix(textureGrad(atlas, uv0, bx, by).a, textureGrad(atlas, uv1, bx, by).a, fw);
+      if (grain > 0.0) {
+        float n = 0.65 * vnoise(gp) + 0.35 * vnoise(gp * 0.23 + 17.0);
+        float th = 0.5 + (n - 0.5) * grain * 0.9, aw = fwidth(a) * 0.75 + 0.02;
+        a = smoothstep(th - aw, th + aw, a);
+      }
       float hl = hlAmt * inHl;                                   // 방금 입력한 글자 강조
       col = mix(stripColor, mix(inkColor, hlColor, hl), a);
     } else {
@@ -192,13 +218,53 @@ const frag = /* glsl */`
   }`;
 
 // ───────────────────────── 유닛 띠 지오메트리 ─────────────────────────
-let UNIT = null; // { geo, arc }
+let UNIT = null;       // 기본 모양 변형본 (= VARS[0])
+const VARS = [];      // 고리 변형본들 { geo, arc, P, cum } — 크기·둥글기가 조금씩 다름
+const NVAR = 16;
+
+// 0..1 난수 (시드 고정 → 같은 시드면 항상 같은 배치)
+function mulberry32(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
 function buildUnitGeometry() {
   // 기울기 보정: 고리 머리는 x–z로 대각선으로 기울어 있어서 방위각 yaw에서 보면 옆으로 접혀 좁아 보인다.
   // x → x − z·tan(yaw)·roundness 전단(shear)으로 그 성분을 상쇄한다. 아핀 변환이라 직선은 그대로(휘지 않음),
   // 끝점은 z=0 이라 폭 340·이음매 그대로. roundness=1 이면 이 카메라에서 정면도와 같은 비율로 보인다.
   const shear = S.roundness * Math.tan(THREE.MathUtils.degToRad(THREE.MathUtils.clamp(S.yaw, -80, 80)));
-  const raw = generateUnit({ unitWidth: UW }).map(([x, y, z]) => [x - z * shear, y, z]);
+  const base = generateUnit({ unitWidth: UW });
+  const N = base.length;
+  // 고리 아래 X자 교차점 (두 꼬리가 x=0 에서 만나는 높이) — 변형의 기준점
+  let yc = 0;
+  for (let i = 1; i < N / 2; i++) if (base[i - 1][0] < 0 && base[i][0] >= 0) {
+    yc = base[i - 1][1] + (base[i][1] - base[i - 1][1]) * (-base[i - 1][0] / (base[i][0] - base[i - 1][0])); break;
+  }
+  // 고리 변형: 교차점을 기준으로 크기(sz)·가로 폭(asp)을 바꾸고, 교차점 너머 꼬리에서 원래 모양으로 서서히 돌아감
+  // → 끝점·끝 기울기는 그대로라 이웃 유닛과 매끄럽게 이어지고, 교차점 위치도 그대로라 줄 엮임 구조 유지.
+  // 크기는 커지는 쪽으로 더 치우쳐서, 작아진 고리도 윗줄 꼬리에 닿아 엮임이 끊기지 않게 함
+  const rnd = mulberry32(S.seed * 9973 + 17);
+  VARS.forEach(v => v.geo.dispose()); VARS.length = 0;
+  for (let vi = 0; vi < NVAR; vi++) {
+    const r1 = rnd(), r2 = rnd();
+    const sz = vi === 0 ? 1 : 1 + S.loopVar * (r1 < 0.3 ? (r1 / 0.3 - 1) * 0.4 : (r1 - 0.3) / 0.7);
+    const asp = vi === 0 ? 1 : 1 + S.roundVar * (r2 * 2 - 1);
+    const sx = sz * asp, sy = sz;
+    const raw = base.map(([x, y, z], i) => {
+      const t = 2 * i / (N - 1) - 1;
+      const w = 1 - THREE.MathUtils.smoothstep(Math.abs(t), 0.6, 0.97);
+      const nx = x + w * (x * sx - x), ny = y + w * (yc + (y - yc) * sy - y);
+      return [nx - z * shear, ny, z];
+    });
+    VARS.push(buildStrip(raw));
+  }
+  UNIT = VARS[0];
+  CORD.restDirty = true;
+  U.segLen.value = UNIT.arc;
+}
+
+// 중심선 점들 → 띠 지오메트리
+function buildStrip(raw) {
   const NS = 360;
   const P = [];
   for (let i = 0; i < NS; i++) {
@@ -237,11 +303,7 @@ function buildUnitGeometry() {
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   geo.setIndex(idx);
   geo.computeBoundingSphere();
-  if (UNIT) UNIT.geo.dispose();
-  UNIT = { geo, arc, P, cum };
-  CORD.restDirty = true;
-  U.segLen.value = arc;
-  meshes.forEach(m => { m.geometry = geo; });
+  return { geo, arc, P, cum, loc: null };
 }
 
 // ───────────────────────── 텍스트 아틀라스 ─────────────────────────
@@ -256,7 +318,9 @@ let TEXT = { str: null, pos: [0], ppw: 1, L: 1 };
 function fontStack() {
   const f = FONTS.find(x => fontKey(x) === S.font) || FONTS[0];
   const variable = f[1] === 'var';
-  return { variable, weight: variable ? S.weight : f[1], css: `"${f[0]}", "${f[2]}", "SUIT Variable", sans-serif`, name: f[0], fb: f[2] };
+  // 가변 폰트는 폰트가 가진 굵기 범위 안으로 (범위 밖 굵기는 브라우저가 끝값으로 그림)
+  const [lo, hi] = f[3] || [100, 900], clampW = w => Math.min(hi, Math.max(lo, w));
+  return { variable, clampW, weight: variable ? clampW(S.weight) : f[1], css: `"${f[0]}", "${f[2]}", "SUIT Variable", sans-serif`, name: f[0], fb: f[2] };
 }
 const varEffectsOn = () => S.varFlash > 0;
 const varRange = () => { const lo = Math.min(S.varMin, S.varMax); return [lo, Math.max(S.varMin, S.varMax, lo + 1)]; };
@@ -270,7 +334,7 @@ async function buildAtlas() {
   // 가변 폰트 + 효과가 켜져 있으면 굵기 9단계를 구워 셰이더에서 섞는다
   const L = fs.variable && varEffectsOn() ? 9 : 1;
   const [wMin, wMax] = varRange();
-  const weights = L === 1 ? [fs.weight] : Array.from({ length: L }, (_, l) => Math.round(wMin + (wMax - wMin) * l / (L - 1)));
+  const weights = L === 1 ? [fs.weight] : Array.from({ length: L }, (_, l) => fs.clampW(Math.round(wMin + (wMax - wMin) * l / (L - 1))));
   try {
     await Promise.all([...new Set(weights)].map(w => document.fonts.load(`${w} 100px "${fs.name}"`, line))
       .concat(document.fonts.load(`${fs.weight} 100px "${fs.fb}"`, line)));
@@ -374,7 +438,7 @@ function layout() {
     for (let k = -nK; k <= nK; k++, g++) {
       if (!meshes[g]) {
         const mat = new THREE.ShaderMaterial({
-          uniforms: { ...U, s0: { value: 0 }, rowIdx: { value: 0 }, unitIdx: { value: 0 } },
+          uniforms: { ...U, s0: { value: 0 }, segLen: { value: 1 }, rowIdx: { value: 0 }, unitIdx: { value: 0 } },
           vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide,
         });
         const m = new THREE.Mesh(UNIT.geo, mat);
@@ -402,16 +466,31 @@ const ROWS = [];
 let slide = 0;
 function applySlide(shiftCord = true) {
   if (!UNIT) return;
+  const arcMean = VARS.reduce((a, v) => a + v.arc, 0) / VARS.length;
   ROWS.forEach((row, ri) => {
     const off = row.dir * slide, n = Math.floor(off / UW), frac = off - n * UW;
-    if (shiftCord && row.n !== null && n !== row.n) cordShiftRow(ri, n - row.n);
+    if (shiftCord && row.n !== null && n !== row.n) { cordShiftRow(ri, n - row.n); CORD.restDirty = true; }
     row.n = n;
     if (CORD.rowFrac) CORD.rowFrac[ri] = frac;
+    // 유닛 q 까지의 띠 길이 누적 (변형본마다 길이가 달라서 글자가 이음매에서 끊기지 않게). 줄 안에서 VAR_P 주기로 반복
+    const pre = [0];
+    for (let i = 0; i < VAR_P; i++) pre.push(pre[i] + VARS[varIdx(row.r, i)].arc);
     for (const { m, k, x } of row.list) {
+      const q = k - n, qm = ((q % VAR_P) + VAR_P) % VAR_P, v = VARS[varIdx(row.r, qm)];
+      if (m.geometry !== v.geo) m.geometry = v.geo;
+      m.userData.v = v;
       m.position.x = x + frac;
-      m.material.uniforms.s0.value = (k - n + row.r * 0.5) * UNIT.arc;   // 줄마다 글자 위치를 조금씩 다르게
+      m.material.uniforms.segLen.value = v.arc;
+      m.material.uniforms.s0.value = (q - qm) / VAR_P * pre[VAR_P] + pre[qm] + row.r * 0.5 * arcMean;   // 줄마다 글자 위치를 조금씩 다르게
     }
   });
+}
+// 줄 r 의 i 번째 유닛이 쓰는 변형본 (시드·줄·위치로 정해지는 난수). 0번 줄 0번이 늘 기본 모양일 필요는 없음
+const VAR_P = 29;
+function varIdx(r, i) {
+  let h = Math.imul(r | 0, 0x9E3779B1) ^ Math.imul(i + 1, 0x85EBCA77) ^ Math.imul(S.seed | 0, 0xC2B2AE3D);
+  h = Math.imul(h ^ h >>> 16, 0x7FEB352D); h = Math.imul(h ^ h >>> 15, 0x846CA68B); h ^= h >>> 16;
+  return (h >>> 0) % NVAR;
 }
 
 // ───────────────────────── 타이핑 반응 ─────────────────────────
@@ -486,12 +565,16 @@ function computeRest() {
   const C = CORD; if (!C.d || !UNIT) return;
   const r = stage.getBoundingClientRect();
   scene.updateMatrixWorld(true); camera.updateMatrixWorld(true);
-  const { P, cum, arc } = UNIT, loc = [];
-  for (let j = 0, q = 0; j < C.npu; j++) {                 // 유닛 중심선을 호길이 균일하게 npu개 샘플
-    const t = j / C.npu * arc;
-    while (q < cum.length - 2 && cum[q + 1] < t) q++;
-    loc.push(P[q].clone().lerp(P[q + 1], (t - cum[q]) / ((cum[q + 1] - cum[q]) || 1)));
-  }
+  const locOf = v => {                                      // 변형본 중심선을 호길이 균일하게 npu개 샘플 (캐시)
+    if (v.loc && v.loc.length === C.npu) return v.loc;
+    const { P, cum, arc } = v, loc = [];
+    for (let j = 0, q = 0; j < C.npu; j++) {
+      const t = j / C.npu * arc;
+      while (q < cum.length - 2 && cum[q + 1] < t) q++;
+      loc.push(P[q].clone().lerp(P[q + 1], (t - cum[q]) / ((cum[q + 1] - cum[q]) || 1)));
+    }
+    return (v.loc = loc);
+  };
   const v3 = new THREE.Vector3(), o3 = new THREE.Vector3();
   o3.set(0, 0, 0).applyMatrix4(content.matrixWorld).project(camera);
   v3.set(1000, 0, 0).applyMatrix4(content.matrixWorld).project(camera);
@@ -499,7 +582,7 @@ function computeRest() {
   C.restFrac.set(C.rowFrac);
   for (let row = 0; row < C.rows; row++) {
     for (let u = 0; u < C.units; u++) {
-      const mesh = meshes[row * C.units + u];
+      const mesh = meshes[row * C.units + u], loc = locOf(mesh.userData.v || UNIT);
       for (let j = 0; j < C.npu; j++) {
         v3.copy(loc[j]).applyMatrix4(mesh.matrixWorld).project(camera);
         const i = row * C.len + u * C.npu + j;
@@ -594,6 +677,7 @@ function syncFrame() {
   U.hlAmt.value = react.hl * react.hl * (3 - 2 * react.hl);
   U.shade.value = S.shade;
   U.weave.value = S.weave;
+  U.grain.value = S.grain; U.grainSize.value = S.grainSize;
   syncVarUniforms();
 
   // 카메라 고정: 방위각 yaw, 높이각 pitch
